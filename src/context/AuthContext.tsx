@@ -2,7 +2,6 @@ import {
   createContext,
   useContext,
   useEffect,
-  useRef,
   useState,
 } from 'react'
 import type { Session } from '@supabase/supabase-js'
@@ -25,58 +24,60 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user,    setUser]    = useState<MappedUser | null>(null)
   const [loading, setLoading] = useState(true)
 
-  async function loadProfile(userId: string): Promise<string | null> {
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), 6000)
+  const loadProfile = async (userId: string) => {
+    console.log('[Auth] loadProfile — userId:', userId)
 
     try {
-      const { data, error } = await sb
+      console.log('[Auth] Probando conexión básica...')
+
+      const { data, error, status } = await sb
         .from('users')
         .select('*')
         .eq('id', userId)
         .single()
-        .abortSignal(controller.signal)
 
-      clearTimeout(timer)
+      console.log('[Auth] Query completada — status:', status)
+      console.log('[Auth] data:', data)
+      console.log('[Auth] error:', error)
 
-      if (error) return error.message
-
-      const mapped = mapUser(data as Record<string, unknown>)
-
-      if (!mapped.active) return 'Cuenta desactivada'
-
-      setUser(mapped)
-      return null
-    } catch (err: unknown) {
-      clearTimeout(timer)
-      if (err instanceof Error && err.name === 'AbortError') {
-        return 'Tiempo de espera agotado al cargar el perfil'
+      if (error) {
+        console.error('[Auth] Error en query:', error.message, error.code)
+        setLoading(false)
+        return
       }
-      return 'Error inesperado al cargar el perfil'
+
+      if (data) {
+        setUser(mapUser(data))
+        setLoading(false)
+      }
+
+    } catch (e) {
+      console.error('[Auth] Exception:', e)
+      setLoading(false)
     }
   }
 
-  // Inicializa sesión y suscribe a cambios
   useEffect(() => {
     let mounted = true
 
-    sb.auth.getSession().then(async ({ data: { session: s } }) => {
-      if (!mounted) return
-      setSession(s)
-      if (s?.user) await loadProfile(s.user.id)
-      setLoading(false)
-    })
-
+    // onAuthStateChange dispara INITIAL_SESSION al suscribirse,
+    // lo que reemplaza la necesidad de llamar getSession() por separado
+    // y evita la race condition de doble loadProfile.
     const { data: { subscription } } = sb.auth.onAuthStateChange(
-      async (_event, s) => {
+      async (event, s) => {
         if (!mounted) return
+
+        console.log('[Auth] onAuthStateChange — event:', event, '| userId:', s?.user?.id ?? null)
+
         setSession(s)
+
         if (s?.user) {
           setLoading(true)
           await loadProfile(s.user.id)
-          setLoading(false)
+          if (mounted) setLoading(false)
         } else {
           setUser(null)
+          setLoading(false)
         }
       }
     )
@@ -87,14 +88,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [])
 
-  // Devuelve el mensaje de error si hubo uno, o null si todo fue bien
   async function signIn(email: string, password: string): Promise<string | null> {
+    console.log('[Auth] signIn — email:', email)
     const { error } = await sb.auth.signInWithPassword({ email, password })
-    if (error) return error.message
+    if (error) {
+      console.error('[Auth] signIn error:', error.message)
+      return error.message
+    }
     return null
   }
 
   async function signOut(): Promise<void> {
+    console.log('[Auth] signOut')
     await sb.auth.signOut()
     setUser(null)
     setSession(null)
